@@ -11,6 +11,7 @@
 import json
 import re
 from datetime import datetime
+from urllib.parse import parse_qs, unquote, urlparse
 
 from playwright.sync_api import sync_playwright
 
@@ -114,11 +115,27 @@ def _dedupe(cards: list) -> list:
     return out
 
 
-def _collect(ctx, name: str, url: str, scrolls: int) -> dict:
+def _collect(ctx, name: str, url: str, scrolls: int, out_dir, guard=None) -> dict:
     page = ctx.new_page()
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(2500)
+        if guard:
+            guard(page)   # 登录态模式下每页必查 300012
+        # 分享短链未登录会 302 到 /login?redirectPath=...，把真实主页地址解出来再走
+        for _ in range(2):
+            parsed = urlparse(page.url)
+            if "/login" not in parsed.path:
+                break
+            rp = (parse_qs(parsed.query).get("redirectPath") or [None])[0]
+            if not rp:
+                break
+            target = unquote(rp)
+            print(f"  ↪ 登录墙，改走 redirectPath: {target[:70]}...")
+            page.goto(target, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(2500)
+            if guard:
+                guard(page)
         try:
             page.wait_for_selector("section.note-item", timeout=15000)
         except Exception:
@@ -126,29 +143,62 @@ def _collect(ctx, name: str, url: str, scrolls: int) -> dict:
         _dismiss_login_popup(page)
         cards = _dedupe(_scroll_and_collect(page, scrolls))
         meta = page.evaluate(META_JS)
+        body_head = ""
+        try:
+            body_head = (page.evaluate(
+                "() => document.body.innerText.slice(0, 200)") or "").replace("\n", " ")
+        except Exception:
+            pass
+        if not cards:   # 采不到时留证据，方便一次性诊断（不要反复重跑浏览器）
+            page.screenshot(path=str(out_dir / f"{name}_fail.png"))
         print(f"  [{name}] {len(cards)} 篇 | 昵称 {meta.get('nickname') or '?'} "
-              f"粉丝 {meta.get('fans') or '?'}")
+              f"粉丝 {meta.get('fans') or '?'} | 落地 {page.url[:60]}")
+        if not cards:
+            print(f"    页面文本: {body_head[:120]}")
         return {"name": name, "url": url, "final_url": page.url,
-                "meta": meta, "cards": cards}
+                "meta": meta, "body_head": body_head, "cards": cards}
     finally:
         page.close()
 
 
-def spy(bloggers: list, scrolls: int = 6, out_dir=None, headless: bool = False) -> dict:
-    """无痕采集一组博主主页，返回 {results, report_path}。"""
+def spy(bloggers: list, scrolls: int = 6, out_dir=None, headless: bool = False,
+        logged_in: bool = False) -> dict:
+    """采集一组博主主页，返回 {results, report_path}。
+
+    默认无痕（不占登录态额度）；但网页端未登录访问主页是强制登录墙，
+    实际可用路径是 logged_in=True（persistent 登录态，2 次页面访问，额度安全）。
+    """
     out_dir = out_dir or new_run_dir("spy")
     results = []
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=headless)
-        try:
-            ctx = browser.new_context(
-                user_agent=UA, locale="zh-CN", timezone_id="Asia/Shanghai",
-                viewport={"width": 1400, "height": 900},
-            )
+    if logged_in:
+        from xhs_agent.browser import Browser, RateLimitError
+        with Browser(headless=headless) as b:
+            if not b.has_login():
+                raise RuntimeError("登录态失效，请先运行: python -m xhs_agent login")
             for name, url in bloggers:
-                results.append(_collect(ctx, name, url, scrolls))
-        finally:
-            browser.close()
+                try:
+                    results.append(
+                        _collect(b.ctx, name, url, scrolls, out_dir, guard=b.check_rate_limit))
+                except RateLimitError:
+                    print("  ⚠️ 触发风控，停止后续采集（已采数据保留）")
+                    break
+    else:
+        with sync_playwright() as pw:
+            # 与 browser.py 一致的反自动化检测参数；fresh context = 无痕，不碰 user_data/
+            browser = pw.chromium.launch(
+                headless=headless,
+                args=["--disable-blink-features=AutomationControlled"],
+                ignore_default_args=["--enable-automation"],
+            )
+            try:
+                ctx = browser.new_context(
+                    user_agent=UA, locale="zh-CN", timezone_id="Asia/Shanghai",
+                    viewport={"width": 1400, "height": 900},
+                )
+                for name, url in bloggers:
+                    results.append(_collect(ctx, name, url, scrolls, out_dir))
+            finally:
+                browser.close()
 
     (out_dir / "bloggers.json").write_text(
         json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -174,7 +224,7 @@ def _render_md(results: list, out_dir) -> "Path":
             f"采集 {len(cards)} 篇，赞 {min(likes) if likes else 0}~"
             f"{max(likes) if likes else 0}（中位 {sorted(likes)[len(likes)//2] if likes else 0}）",
             f"标题长度（去emoji）{min(lens) if lens else 0}~{max(lens) if lens else 0} "
-            f"平均 {sum(lens)/len(lens):.0f}；含数字 {n_num}/{len(titles)}，"
+            f"平均 {(sum(lens)/len(lens)) if lens else 0:.0f}；含数字 {n_num}/{len(titles)}，"
             f"含 emoji {n_emo}/{len(titles)}",
             "",
         ]

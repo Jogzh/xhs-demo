@@ -133,8 +133,8 @@ def do_fetch(urls: list, headless: bool) -> int:
         return fetch(b, urls)
 
 
-def do_spy(urls: list, headless: bool) -> int:
-    """无痕采集对标博主主页（不登录、不碰 user_data/，不占发布额度）。"""
+def do_spy(urls: list, headless: bool, logged_in: bool) -> int:
+    """采集对标博主主页（默认无痕不占额度；主页有强制登录墙，实际用 --logged-in）。"""
     from xhs_agent.spy import load_bloggers, spy
     if urls:
         bloggers = [(f"博主{i}", u) for i, u in enumerate(urls, 1)]
@@ -145,9 +145,10 @@ def do_spy(urls: list, headless: bool) -> int:
         return -1
     rid = db.run_started("spy", None, "manual")
     try:
-        r = spy(bloggers, headless=headless)
+        r = spy(bloggers, headless=headless, logged_in=logged_in)
         total = sum(len(x["cards"]) for x in r["results"])
-        db.run_finished(rid, "success")
+        db.run_finished(rid, "success" if total else "failed",
+                        "" if total else "0 篇（可能登录墙/页面改版，看 run 目录截图）")
         print(f"[spy] 完成：{len(r['results'])} 位博主 / {total} 篇，简报 {r['report_path']}")
         return rid
     except Exception as e:
@@ -273,6 +274,8 @@ def main():
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--auto", action="store_true", help="metrics 计划任务模式（幂等）")
     p.add_argument("--headless", action="store_true", help="无头模式（默认弹窗，遇验证码可手动过）")
+    p.add_argument("--logged-in", action="store_true",
+                   help="spy 用登录态访问（网页端主页有强制登录墙，默认无痕采不到）")
     a = p.parse_args()
 
     if a.cmd == "login":
@@ -295,7 +298,7 @@ def main():
             p.error("fetch 需要笔记链接")
         return do_fetch(a.args, a.headless)
     if a.cmd == "spy":
-        return do_spy(a.args, a.headless)
+        return do_spy(a.args, a.headless, a.logged_in)
     if a.cmd == "research":
         return do_research(a.topic, a.headless)
     if a.cmd == "publish-content":
