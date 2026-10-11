@@ -26,6 +26,45 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 EXT_BY_TYPE = {"image/jpeg": ".jpg", "image/webp": ".webp", "image/png": ".png",
                "image/avif": ".avif", "video/mp4": ".mp4"}
 
+# 页面数据藏在 window.__INITIAL_STATE__.note.noteDetailMap 里，是 Vue 响应式代理，
+# 整体序列化会失败，所以在这里只挑出需要的字段，拼成普通对象返回。
+EXTRACT_JS = """() => {
+    const map = window.__INITIAL_STATE__?.note?.noteDetailMap;
+    if (!map) return null;
+    for (const k of Object.keys(map)) {
+        const n = map[k]?.note;
+        if (!n || !(n.title || n.desc)) continue;
+        const it = n.interactInfo || {};
+        let video = null;
+        try {
+            for (const s of n.video.media.videoStream)
+                if (!video || (s.videoBitrate || 0) > (video.bitrate || 0))
+                    video = { url: s.masterUrl, bitrate: s.videoBitrate || 0 };
+        } catch (e) {}
+        const images = (n.imageList || []).map(img => {
+            let url = null;
+            for (const info of img.infoList || [])
+                if (info.imageScene === 'WB_DFT' && info.url) { url = info.url; break; }
+            return url || img.urlDefault || img.url || null;
+        }).filter(Boolean);
+        return {
+            id: n.noteId || k,
+            type: n.type || 'normal',
+            title: n.title || '',
+            desc: n.desc || '',
+            time: n.time || null,
+            ipLocation: n.ipLocation || '',
+            nickname: (n.user && n.user.nickname) || '未知',
+            liked: it.likedCount || '', collected: it.collectedCount || '',
+            comments: it.commentCount || '', shares: it.shareCount || '',
+            tags: (n.tagList || []).map(t => t && t.name).filter(Boolean),
+            images,
+            video: video ? video.url : null,
+        };
+    }
+    return null;
+}"""
+
 
 def launch(headless=False):
     pw = sync_playwright().start()
@@ -66,44 +105,17 @@ def cmd_login():
 
 
 def wait_note_data(page, timeout_s=60):
-    """轮询页面里的 window.__INITIAL_STATE__，拿到笔记 JSON 就返回 (id, note)"""
-    js = """() => {
-        const s = window.__INITIAL_STATE__;
-        const map = s && s.note && s.note.noteDetailMap;
-        if (!map) return null;
-        for (const k of Object.keys(map)) {
-            const n = map[k] && map[k].note;
-            if (n && (n.title || n.desc)) return { id: n.noteId || k, note: n };
-        }
-        return null;
-    }"""
+    """轮询页面，拿到笔记 JSON（普通对象）就返回，超时返回 None"""
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         try:
-            data = page.evaluate(js)
+            data = page.evaluate(EXTRACT_JS)
         except Exception:
             data = None
         if data:
-            return data["id"], data["note"]
+            return data
         time.sleep(1)
-    return None, None
-
-
-def pick_image_url(img: dict) -> str | None:
-    # WB_DFT 场景的图通常无水印
-    for info in img.get("infoList") or []:
-        if info.get("imageScene") == "WB_DFT" and info.get("url"):
-            return info["url"]
-    return img.get("urlDefault") or img.get("url")
-
-
-def pick_video_url(note: dict) -> str | None:
-    try:
-        streams = note["video"]["media"]["videoStream"]
-        best = max(streams, key=lambda s: s.get("videoBitrate", 0))
-        return best.get("masterUrl")
-    except (KeyError, TypeError, ValueError):
-        return None
+    return None
 
 
 def download(ctx, url: str, stem: Path) -> Path | None:
@@ -120,55 +132,42 @@ def download(ctx, url: str, stem: Path) -> Path | None:
     return None
 
 
-def fmt_counts(note: dict) -> str:
-    it = note.get("interactInfo") or {}
-    return (f"赞 {it.get('likedCount', '?')} | 收藏 {it.get('collectedCount', '?')} "
-            f"| 评论 {it.get('commentCount', '?')} | 分享 {it.get('shareCount', '?')}")
-
-
-def save_note(ctx, note_id: str, note: dict, src_url: str) -> Path:
-    out = NOTES_DIR / note_id
+def save_note(ctx, data: dict, src_url: str) -> Path:
+    out = NOTES_DIR / data["id"]
     out.mkdir(parents=True, exist_ok=True)
 
-    # 下载图片
     img_files = []
-    image_list = note.get("imageList") or []
-    for i, img in enumerate(image_list, 1):
-        url = pick_image_url(img)
-        if not url:
-            continue
+    for i, url in enumerate(data["images"], 1):
         f = download(ctx, url, out / f"{i:02d}")
         if f:
             img_files.append(f.name)
-            print(f"  🖼️ 图片 {i}/{len(image_list)} 已下载")
+            print(f"  🖼️ 图片 {i}/{len(data['images'])} 已下载")
 
-    # 视频笔记顺带下载视频
     video_file = None
-    vurl = pick_video_url(note)
-    if vurl:
-        vf = download(ctx, vurl, out / "video")
+    if data["video"]:
+        vf = download(ctx, data["video"], out / "video")
         if vf:
             video_file = vf.name
             print("  🎬 视频已下载")
 
-    title = note.get("title") or (note.get("desc") or "无标题")[:30]
-    ts = note.get("time")
+    ts = data["time"]
     t = datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M") if ts else "未知"
-    tags = [tg.get("name") for tg in note.get("tagList") or [] if tg.get("name")]
+    title = data["title"].strip() or data["desc"].strip()[:30] or "无标题"
 
     lines = [
-        f"# {title.strip()}",
+        f"# {title}",
         "",
-        f"- 作者：{(note.get('user') or {}).get('nickname', '未知')}",
+        f"- 作者：{data['nickname']}",
         f"- 发布时间：{t}",
-        f"- IP 属地：{note.get('ipLocation', '未知')}",
-        f"- 数据：{fmt_counts(note)}",
-        f"- 类型：{'视频' if note.get('type') == 'video' else '图文'}",
+        f"- IP 属地：{data['ipLocation'] or '未知'}",
+        f"- 数据：赞 {data['liked']} | 收藏 {data['collected']} "
+        f"| 评论 {data['comments']} | 分享 {data['shares']}",
+        f"- 类型：{'视频' if data['type'] == 'video' else '图文'}",
         f"- 原文：{src_url}",
     ]
-    if tags:
-        lines.append(f"- 标签：{' '.join('#' + t2 for t2 in tags)}")
-    lines += ["", "---", "", note.get("desc") or "（无正文）"]
+    if data["tags"]:
+        lines.append(f"- 标签：{' '.join('#' + t2 for t2 in data['tags'])}")
+    lines += ["", "---", "", data["desc"].strip() or "（无正文）"]
     for f in img_files:
         lines += ["", f"![图片]({f})"]
     if video_file:
@@ -190,12 +189,12 @@ def cmd_fetch(urls: list[str], headless: bool):
             page = ctx.new_page()
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                note_id, note = wait_note_data(page, timeout_s=60)
-                if not note:
+                data = wait_note_data(page, timeout_s=60)
+                if not data:
                     raise RuntimeError(
                         "60 秒内没拿到笔记数据。常见原因：① 登录过期 -> python xhs.py login；"
                         "② 链接缺 xsec_token -> 换完整分享链接；③ 页面有验证码 -> 用非 --headless 模式手动过一下。")
-                md = save_note(ctx, note_id, note, url)
+                md = save_note(ctx, data, url)
                 print(f"  ✅ 已保存：{md}")
                 ok += 1
             except Exception as e:
