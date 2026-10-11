@@ -61,6 +61,8 @@ PYTHONPATH=src python -m xhs_agent refresh         # 手动复盘（纯本地）
 PYTHONPATH=src python -m xhs_agent search <关键词>  # 搜爆款
 PYTHONPATH=src python -m xhs_agent fetch <笔记链接> # 抓整篇笔记到 notes/
 PYTHONPATH=src python -m xhs_agent run-once --topic X   # 模板内容兜底发布
+PYTHONPATH=src python -m xhs_agent topic list           # 主题池
+PYTHONPATH=src python -m xhs_agent topic add X          # 加主题（research 轮询用）
 ```
 
 ## 硬约束（实测踩坑，勿越）

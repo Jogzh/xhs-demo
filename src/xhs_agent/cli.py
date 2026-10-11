@@ -181,6 +181,26 @@ def do_metrics(auto: bool, headless: bool) -> int:
 
 # ---------- 展示 ----------
 
+def do_topic(op: str, name: str | None):
+    """主题池管理：topic add X / topic list / topic pause X / topic resume X。"""
+    with db.connect() as conn:
+        if op == "add":
+            db.add_topic(name)
+            return print(f"[topic] 已添加: {name}")
+        if op in ("pause", "resume"):
+            conn.execute("UPDATE topics SET status=? WHERE name=?",
+                         ("active" if op == "resume" else "paused", name))
+            return print(f"[topic] {name} → {'active' if op == 'resume' else 'paused'}")
+        rows = conn.execute(
+            "SELECT name, status, last_used_at FROM topics ORDER BY id").fetchall()
+    print("主题池:")
+    for r in rows:
+        print(f"  [{'on ' if r['status'] == 'active' else 'off'}] {r['name']}"
+              f"（上次使用 {r['last_used_at'] or '从未'}）")
+    if not rows:
+        print("  （空，topic add <名称> 添加；research 默认主题在 cli.py 兜底）")
+
+
 def show_status():
     print(f"总开关: {'on' if db.master_switch_on() else 'off'}   数据库: {db.DB_PATH}")
     if PENDING.exists():
@@ -220,7 +240,7 @@ def main():
     p = argparse.ArgumentParser(prog="xhs_agent", description="小红书自我迭代 Agent")
     p.add_argument("cmd", choices=["login", "status", "pause", "resume", "search", "fetch",
                                    "research", "publish-content", "run-once", "daily",
-                                   "metrics", "refresh"])
+                                   "metrics", "refresh", "topic"])
     p.add_argument("args", nargs="*", help="search 的关键词 / fetch 的链接")
     p.add_argument("--topic", default=None)
     p.add_argument("--file", default=str(PENDING))
@@ -265,6 +285,14 @@ def main():
     if a.cmd == "refresh":
         from xhs_agent.refresher import refresh
         return refresh()
+    if a.cmd == "topic":
+        ops = {"add", "list", "pause", "resume"}
+        op = a.args[0] if a.args else "list"
+        if op not in ops:
+            p.error(f"topic 子命令: {sorted(ops)}")
+        if op in ("add", "pause", "resume") and len(a.args) < 2:
+            p.error(f"topic {op} 需要主题名")
+        return do_topic(op, a.args[1] if len(a.args) > 1 else None)
 
 
 if __name__ == "__main__":
