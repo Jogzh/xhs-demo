@@ -6,6 +6,7 @@
   pause / resume    总开关 off / on（计划任务全部跳过）
   search <关键词>    搜索打印 top 卡片
   fetch <链接>...    抓笔记存 notes/
+  spy               无痕采集对标博主主页（不登录不占额度；清单 data/bloggers.txt）
   research          选题调研 → 爆款摘要 + competitors 入库（一天 1 次）
   publish-content   发布 AI 排队内容（默认 data/pending_note.json，发完归档）
   run-once          模板兜底发布（--topic X）
@@ -132,6 +133,29 @@ def do_fetch(urls: list, headless: bool) -> int:
         return fetch(b, urls)
 
 
+def do_spy(urls: list, headless: bool) -> int:
+    """无痕采集对标博主主页（不登录、不碰 user_data/，不占发布额度）。"""
+    from xhs_agent.spy import load_bloggers, spy
+    if urls:
+        bloggers = [(f"博主{i}", u) for i, u in enumerate(urls, 1)]
+    else:
+        bloggers = load_bloggers()
+    if not bloggers:
+        print("[spy] 无采集对象：传链接参数，或建 data/bloggers.txt（每行 `名称 链接`）")
+        return -1
+    rid = db.run_started("spy", None, "manual")
+    try:
+        r = spy(bloggers, headless=headless)
+        total = sum(len(x["cards"]) for x in r["results"])
+        db.run_finished(rid, "success")
+        print(f"[spy] 完成：{len(r['results'])} 位博主 / {total} 篇，简报 {r['report_path']}")
+        return rid
+    except Exception as e:
+        db.run_finished(rid, "failed", f"{type(e).__name__}: {e}")
+        print(f"[spy] 失败: {type(e).__name__}: {e}")
+        return -1
+
+
 def do_research(topic: str | None, headless: bool) -> int:
     if not _switch_guard("research"):
         return -1
@@ -239,7 +263,7 @@ def main():
             stream.reconfigure(encoding="utf-8", errors="replace")
     p = argparse.ArgumentParser(prog="xhs_agent", description="小红书自我迭代 Agent")
     p.add_argument("cmd", choices=["login", "status", "pause", "resume", "search", "fetch",
-                                   "research", "publish-content", "run-once", "daily",
+                                   "spy", "research", "publish-content", "run-once", "daily",
                                    "metrics", "refresh", "topic"])
     p.add_argument("args", nargs="*", help="search 的关键词 / fetch 的链接")
     p.add_argument("--topic", default=None)
@@ -270,6 +294,8 @@ def main():
         if not a.args:
             p.error("fetch 需要笔记链接")
         return do_fetch(a.args, a.headless)
+    if a.cmd == "spy":
+        return do_spy(a.args, a.headless)
     if a.cmd == "research":
         return do_research(a.topic, a.headless)
     if a.cmd == "publish-content":
