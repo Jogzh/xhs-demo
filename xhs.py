@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""小红书笔记抓取（Playwright 极简版）
+"""小红书笔记抓取/发布（Playwright 极简版）
 
 用法:
   python xhs.py login                 首次使用：弹出浏览器登录(扫码)，登录态保存到 ./user_data
   python xhs.py <笔记链接> [更多链接]   抓取笔记 -> ./notes/<笔记id>/note.md（图片一并下载）
+  python xhs.py post <文章.md>        发布笔记：自动生成封面图 + 上传 + 填内容 + 发布
+      --img 图片路径                    指定图片（可多次）；不给就按文章自动生成封面
+      --dry-run                        填完表单但不点发布，截图确认用
 
 说明:
-  - 链接用完整分享链接（带 xsec_token 参数）最稳，短链接 xhslink.com/xxx 也支持。
+  - 抓取链接用完整分享链接（带 xsec_token 参数）最稳，短链接 xhslink.com/xxx 也支持。
   - 默认弹出浏览器窗口运行（不易触发风控，遇到验证码可手动滑一下）；加 --headless 无头运行。
 """
 
 import argparse
+import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +24,7 @@ from playwright.sync_api import sync_playwright
 ROOT = Path(__file__).resolve().parent
 USER_DATA = ROOT / "user_data"   # 浏览器配置目录（存登录态，勿删）
 NOTES_DIR = ROOT / "notes"       # 抓取结果输出目录
+TMP_DIR = ROOT / ".tmp"          # 自动生成封面等临时文件
 HOME = "https://www.xiaohongshu.com"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36")
@@ -207,16 +212,157 @@ def cmd_fetch(urls: list[str], headless: bool):
         pw.stop()
 
 
+def parse_article(path: Path) -> tuple[str, str]:
+    """从 markdown 里取标题（第一个 # 开头行）和正文（去掉标题行/图片行）"""
+    text = Path(path).read_text(encoding="utf-8")
+    lines = text.splitlines()
+    title = next((l.lstrip("# ").strip() for l in lines if l.startswith("# ")), "")
+    body = "\n".join(l for l in lines
+                     if not l.startswith("# ") and not l.startswith("![")).strip()
+    return title[:20], body[:1000]   # 小红书标题限 20 字、正文限 1000 字
+
+
+COVER_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
+  body {{ margin: 0 }}
+  #cover {{ position: relative; width: 1080px; height: 1440px; box-sizing: border-box;
+    background: linear-gradient(160deg, #ff2442 0%, #b3123a 55%, #4d0e2b 100%);
+    display: flex; flex-direction: column; justify-content: center; padding: 96px;
+    font-family: "Microsoft YaHei", sans-serif; color: #fff }}
+  .kicker {{ font-size: 34px; letter-spacing: 10px; opacity: .85; margin-bottom: 44px }}
+  .title  {{ font-size: 96px; font-weight: 700; line-height: 1.35 }}
+  .sub    {{ margin-top: 60px; font-size: 42px; opacity: .92; line-height: 1.7 }}
+  .footer {{ position: absolute; left: 96px; right: 96px; bottom: 72px; display: flex;
+    justify-content: space-between; font-size: 30px; opacity: .7 }}
+</style></head><body><div id="cover">
+  <div class="kicker">AUTOMATION TEST</div>
+  <div class="title">{title}</div>
+  <div class="sub">{sub}</div>
+  <div class="footer"><span>xhs-demo</span><span>{date}</span></div>
+</div></body></html>"""
+
+
+def make_cover(ctx, title: str, sub: str) -> Path:
+    """用浏览器渲染一张 1080x1440 的封面图，返回图片路径"""
+    TMP_DIR.mkdir(exist_ok=True)
+    out = TMP_DIR / "cover.png"
+    page = ctx.new_page()
+    try:
+        page.set_content(COVER_HTML.format(title=title, sub=sub,
+                                           date=datetime.now().strftime("%Y-%m-%d")))
+        page.wait_for_selector("#cover")
+        page.wait_for_timeout(500)   # 等字体渲染
+        page.locator("#cover").screenshot(path=str(out))
+    finally:
+        page.close()
+    return out
+
+
+def open_publish_page(ctx):
+    """从官网顶栏点「发布」，像手动操作一样进入发布页（会新开一个标签页）"""
+    home = ctx.new_page()
+    home.goto(HOME, wait_until="domcontentloaded")
+    home.wait_for_selector("span.channel", timeout=30000)
+    with ctx.expect_page(timeout=30000) as pop:
+        home.locator("span.channel").filter(has_text="发布").first.click()
+    page = pop.value
+    page.wait_for_load_state("domcontentloaded")
+    home.close()
+    return page
+
+
+def cmd_post(article: str, imgs: list[str], headless: bool, dry_run: bool):
+    title, body = parse_article(Path(article))
+    if not title:
+        return print("❌ 文章里没找到标题行（# 开头）")
+
+    pw, ctx = launch(headless=headless)
+    try:
+        page = open_publish_page(ctx)
+        page.wait_for_selector("input[type=file]", state="attached", timeout=30000)
+
+        # 切到「上传图文」tab（顶栏/侧边栏有同名隐藏项，只点可见的）
+        page.evaluate("""() => {
+            const els = [...document.querySelectorAll('span,div')].filter(e =>
+                e.childElementCount === 0 && e.textContent.trim() === '上传图文' && e.offsetParent);
+            if (els.length) els[0].click();
+        }""")
+        page.wait_for_selector('input[type=file][accept*=".jpg"]',
+                               state="attached", timeout=15000)
+
+        # 没给图就自动生成一张封面
+        paths = [str(Path(p).resolve()) for p in imgs]
+        if not paths:
+            sub = body.replace("\n", " ")[:40]
+            cover = make_cover(ctx, title, sub)
+            paths = [str(cover.resolve())]
+            print(f"🖼️ 已自动生成封面：{cover}")
+        page.set_input_files("input[type=file]", paths)
+        print(f"⬆️  已上传 {len(paths)} 张图片，等待处理...")
+
+        # 上传后才会出现标题/正文表单
+        page.wait_for_selector("input[placeholder*='标题'], .d-title", timeout=60000)
+        page.fill("input[placeholder*='标题'], .d-title", title)
+        page.click("[contenteditable=true]")
+        page.keyboard.insert_text(body)
+        page.keyboard.press("Escape")   # 关掉话题联想下拉
+        page.wait_for_timeout(1000)
+
+        # 关掉「图片可以编辑啦」之类的新手引导弹窗
+        tip = page.get_by_role("button", name="我知道了")
+        if tip.count() and tip.first.is_visible():
+            tip.first.click()
+            page.wait_for_timeout(500)
+
+        if dry_run:
+            page.screenshot(path=str(ROOT / "post_dryrun.png"))
+            print("🔎 dry-run：已填好表单但未发布，截图在 post_dryrun.png")
+            return
+
+        # 底部「发布」按钮取不到 DOM（shadow DOM 渲染，文本/类名/按钮角色都查不到），
+        # 但它固定在视口底部中间偏右，按坐标点击（视口在 launch() 里固定为 1400x900）
+        page.wait_for_timeout(1500)
+        page.screenshot(path=str(TMP_DIR / "pre_publish.png"))
+        vp = page.viewport_size
+        page.mouse.click(int(vp["width"] / 2 + 60), vp["height"] - 45)
+        page.wait_for_timeout(2000)
+        # 有些内容会弹「发布声明/AI 声明」确认框，有就点确认
+        confirm = page.locator("button:visible").filter(
+            has_text=re.compile("确认|确定|仍然|继续"))
+        if confirm.count():
+            confirm.first.click()
+            page.wait_for_timeout(2000)
+
+        # 成功标志：跳转 success 页，或页面出现「发布成功」提示
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            if "success" in page.url or page.get_by_text("发布成功").count():
+                print(f"✅ 发布成功！{page.url}")
+                page.screenshot(path=str(ROOT / "post_success.png"))
+                return
+            page.wait_for_timeout(1000)
+        page.screenshot(path=str(ROOT / "post_fail.png"))
+        print(f"⚠️  点了发布但 60 秒内没看到成功标志，当前页面：{page.url}")
+    finally:
+        ctx.close()
+        pw.stop()
+
+
 def main():
-    ap = argparse.ArgumentParser(description="小红书笔记抓取",
+    ap = argparse.ArgumentParser(description="小红书笔记抓取/发布",
                                  formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog=__doc__.split("用法:")[1])
-    ap.add_argument("items", nargs="+", help="login 或 笔记链接（可多个）")
+    ap.add_argument("items", nargs="+", help="login / post <文章md> / 笔记链接（可多个）")
+    ap.add_argument("--img", action="append", default=[], help="post 用的图片，可多次指定")
     ap.add_argument("--headless", action="store_true", help="无头模式运行（不弹窗口）")
+    ap.add_argument("--dry-run", action="store_true", help="post 填完表单但不点发布")
     args = ap.parse_args()
 
     if args.items[0] == "login":
         cmd_login()
+    elif args.items[0] == "post":
+        if len(args.items) < 2:
+            ap.error("post 需要一个 markdown 文件，如：python xhs.py post article.md")
+        cmd_post(args.items[1], args.img, args.headless, args.dry_run)
     else:
         cmd_fetch(args.items, args.headless)
 

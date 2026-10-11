@@ -1,6 +1,10 @@
-# 登录态和抓取结果不入库
+# 运行时数据：登录态 / 抓取结果 / 数据库 / 截图 / 排队内容（统一在 data/）
 user_data/
 notes/
+.tmp/
+data/
 
+# IDE 与缓存
+.idea/
 __pycache__/
 *.pyc
