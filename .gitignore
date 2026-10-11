@@ -1,0 +1,6 @@
+# 登录态和抓取结果不入库
+user_data/
+notes/
+
+__pycache__/
+*.pyc
