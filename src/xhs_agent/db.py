@@ -207,12 +207,18 @@ def save_note(run_id: int, title: str, descr: str, image_paths: list, topics: li
 
 
 def pending_metric_notes() -> list:
-    """发布未满 7 天且未结题的笔记。"""
+    """发布未满 7 天且未结题的笔记（xhs_note_id 可能为 NULL，回流时按标题回填）。"""
     with connect() as conn:
         rows = conn.execute(
             "SELECT id, xhs_note_id, title, published_at FROM notes "
-            "WHERE xhs_note_id IS NOT NULL AND finished=0").fetchall()
+            "WHERE finished=0").fetchall()
         return [dict(r) for r in rows]
+
+
+def set_note_xhs_id(note_row_id: int, xhs_note_id: str):
+    with connect() as conn:
+        conn.execute("UPDATE notes SET xhs_note_id=? WHERE id=?",
+                     (xhs_note_id, note_row_id))
 
 
 def save_metric(note_row_id: int, day_offset: int, likes, collects, comments, shares) -> float:

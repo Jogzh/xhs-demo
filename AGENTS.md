@@ -10,12 +10,16 @@
    topics 表轮询，或问一句。
 2. **读策略库**：status 输出末尾的 **active insights** 是历史数据沉淀的写作策略
    （高分组 vs 低分组的显著差异），撰写时必须吸收。
-3. **（可选，一天最多 1 次）调研**：
+3. **（可选）调研**，两条路径按需选：
    ```bash
-   python -m xhs_agent research --topic <主题>
+   python -m xhs_agent research --topic <主题>   # 搜索页爆款调研（≈6 次访问，一天最多 1 次）
+   python -m xhs_agent spy --logged-in           # 拆对标博主主页（≈2 次访问，清单 data/bloggers.txt）
    ```
-   产出 `data/runs/<ts>_research/research.md` 爆款简报（标题句式/字数/话题分布/互动量级）。
-   已调研过会自动跳过；触发风控（RateLimitError）就直接凭经验写。
+   - research 产出 `data/runs/<ts>_research/research.md`（标题句式/字数/话题分布/互动量级）。
+     已调研过会自动跳过；触发风控（RateLimitError）就直接凭经验写。
+   - spy 产出 `data/runs/<ts>_spy/spy.md`（每位博主 top 笔记 + 标题共性统计）。
+     对标博主清单维护在 `data/bloggers.txt`（每行 `名称 链接`，**不进 git**）。
+   - 同一天两样都跑也就 ≈8 次访问，低于红线，但别和发布挤在同一小时里反复跑。
 4. **撰写内容**，写入 `data/pending_note.json`（UTF-8）：
    ```json
    {
@@ -42,14 +46,14 @@
 6. **回报结果**：把 title / note_id / 截图目录（data/runs/<ts>_publish/）告诉用户；
    失败时读 runs 表 error 和对应截图，修好后重试（注意红线）。
 
-## 每日自动 loop（Windows 计划任务）
+## 每日节奏（2026-10-11 起改为人工驱动，计划任务已注销）
 
-- 09:05 `xhs-agent-daily-metrics`：回流互动数据 → 打分（score = 1赞+2评+3转+1.5藏）
-  → T+7 结题 → `refresh` 复盘出新 insights。
-- 10:30 `xhs-agent-daily-publish`：**只发 pending_note.json 里的 AI 排队内容**
-  （发完自动归档到 data/archive/）；没有排队内容就跳过，不会盲发。
-- 日志：`data/sched_publish.log`、`data/sched_metrics.log`。
-- 注册/管理：`powershell -ExecutionPolicy Bypass -File scripts\register_tasks.ps1 -Action register`。
+用户每天会主动发起，没有定时任务：
+- **"复盘"**：`python -m xhs_agent metrics` 回流互动数据 → 打分
+  （score = 1赞+2评+3转+1.5藏）→ `python -m xhs_agent refresh` 出新 insights，
+  把结论讲给用户。
+- **"发文"**：按上面标准流程写 pending → 发布 → 回报。
+- 想恢复自动 loop：`powershell -ExecutionPolicy Bypass -File scripts\register_tasks.ps1 -Action register`。
 
 ## 常用命令
 
@@ -60,6 +64,7 @@ PYTHONPATH=src python -m xhs_agent metrics         # 手动回流
 PYTHONPATH=src python -m xhs_agent refresh         # 手动复盘（纯本地）
 PYTHONPATH=src python -m xhs_agent search <关键词>  # 搜爆款
 PYTHONPATH=src python -m xhs_agent fetch <笔记链接> # 抓整篇笔记到 notes/
+PYTHONPATH=src python -m xhs_agent spy --logged-in  # 拆对标博主主页（清单 data/bloggers.txt）
 PYTHONPATH=src python -m xhs_agent run-once --topic X   # 模板内容兜底发布
 PYTHONPATH=src python -m xhs_agent topic list           # 主题池
 PYTHONPATH=src python -m xhs_agent topic add X          # 加主题（research 轮询用）
@@ -75,6 +80,10 @@ PYTHONPATH=src python -m xhs_agent topic add X          # 加主题（research �
 - **persistent context 单实例**：同一时刻只能有一个脚本用 user_data/，
   跑之前确认没有残留浏览器进程占用。
 - **登录态失效**：发布报"登录态失效"时，请用户跑 `python -m xhs_agent login` 扫码。
+- **未登录主页是登录墙**：网页端不登录访问博主主页会整页 302 到 /login，
+  spy 默认无痕模式采不到东西，实际用 `spy --logged-in`（仅 ≈2 次页面访问）。
+- **训练数据不进 git**：data/（db/调研/归档/bloggers.txt）、notes/、user_data/
+  都在 .gitignore；对标博主、主题池等信息只存在 data/ 下，仓库可公开。
 - **发布按钮是 shadow DOM**：publisher.py 按坐标点（视口 1400x900 固定），勿改视口。
 
 ## 迭代机制（score 驱动）

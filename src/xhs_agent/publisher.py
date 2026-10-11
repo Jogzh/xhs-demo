@@ -67,8 +67,9 @@ def prepare_images(ctx: BrowserContext, content: dict, shots_dir: Path) -> list:
 
 
 def add_topics(page, editor, topics: list) -> list:
-    """(尽力) #话题 触发联想下拉并选中；失败保留纯文本 #。返回成功加入的话题。"""
-    added = []
+    """(尽力) #话题 触发联想下拉并选中；选不中也没关系——网页编辑器对
+    `#话题␣` 会自动渲染成话题标签（2026-10 实测），所以最后以正文里
+    真实出现的文本为准。返回写入成功的话题。"""
     for tp in (topics or [])[:4]:
         try:
             editor.click()
@@ -79,7 +80,6 @@ def add_topics(page, editor, topics: list) -> list:
             if dropdown.count() and dropdown.is_visible():
                 dropdown.click()
                 page.wait_for_timeout(500)
-                added.append(tp)
             else:
                 page.keyboard.type(" ")
         except Exception:
@@ -87,7 +87,11 @@ def add_topics(page, editor, topics: list) -> list:
                 page.keyboard.type(" ")
             except Exception:
                 pass
-    return added
+    try:
+        text = editor.inner_text()
+    except Exception:
+        text = ""
+    return [tp for tp in (topics or [])[:4] if tp in text]
 
 
 def publish(ctx, content: dict, shots_dir: Path, dry_run: bool = False,

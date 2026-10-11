@@ -3,12 +3,19 @@
 
 一次回流 = 1 次主页 + N 篇详情页访问，日频在风控安全线内。
 """
+import re
 from datetime import datetime
 
 from xhs_agent import db, new_run_dir
 from xhs_agent.browser import Browser, RateLimitError
 from xhs_agent.fetch import note_detail
-from xhs_agent.search import profile_tokens
+from xhs_agent.research import EMOJI_RE
+from xhs_agent.search import profile_notes
+
+
+def _norm_title(t: str) -> str:
+    """标题归一化（去 emoji/空白）用于回填匹配。"""
+    return re.sub(EMOJI_RE, "", t or "").replace(" ", "")[:12]
 
 
 def collect_metrics(b: Browser, trigger: str = "auto") -> None:
@@ -22,8 +29,22 @@ def collect_metrics(b: Browser, trigger: str = "auto") -> None:
         print("[metrics] cookie 里没找到 x-user-id，无法访问个人主页")
         return
 
-    tokens = profile_tokens(b, user_id)
+    cards = profile_notes(b, user_id)
+    tokens = {c["note_id"]: c["xsec_token"] for c in cards if c.get("xsec_token")}
     print(f"[metrics] 个人主页拿到 {len(tokens)} 条笔记 token")
+
+    # 发布时 success 页没抓到 note_id 的笔记，按标题前缀回填
+    for n in notes:
+        if n["xhs_note_id"]:
+            continue
+        key = _norm_title(n["title"])
+        hit = next((c for c in cards if _norm_title(c.get("title")).startswith(key)), None)
+        if hit:
+            db.set_note_xhs_id(n["id"], hit["note_id"])
+            n["xhs_note_id"] = hit["note_id"]
+            print(f"[metrics] 回填 note_id: {n['title'][:18]} → {hit['note_id']}")
+        else:
+            print(f"[metrics] {n['title'][:18]} 主页没匹配到 note_id，跳过")
 
     out_dir = new_run_dir("metrics")
     done = 0
