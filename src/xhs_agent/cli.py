@@ -11,8 +11,10 @@
   publish-content   发布 AI 排队内容（默认 data/pending_note.json，发完归档）
   run-once          模板兜底发布（--topic X）
   daily             计划任务入口：只发排队内容，无则跳过（不盲发）
-  metrics           数据回流打分（--auto 供计划任务，幂等）
+  metrics           数据回流打分（--auto 供计划任务，幂等；--incognito 无痕不碰账号）
   refresh           复盘出 insights（纯本地计算，无浏览器）
+  render-images     pending 内容本地出图 + 发文文本（用户手动发布用，不碰账号）
+  lock-account / unlock-account  账号锁：风控期禁止一切登录态（user_data/）操作
 """
 import argparse
 import json
@@ -179,7 +181,7 @@ def do_research(topic: str | None, headless: bool) -> int:
         return -1
 
 
-def do_metrics(auto: bool, headless: bool) -> int:
+def do_metrics(auto: bool, headless: bool, incognito: bool = False) -> int:
     trigger = "auto" if auto else "manual"
     if not _switch_guard("metrics"):
         return -1
@@ -191,17 +193,62 @@ def do_metrics(auto: bool, headless: bool) -> int:
         print("[metrics] 今天已有成功回流记录，跳过")
         return -1
     try:
-        with Browser(headless=headless) as b:
-            if not b.has_login():
-                raise PublishError("登录态失效，请先运行: python -m xhs_agent login")
-            from xhs_agent.analytics import collect_metrics
-            collect_metrics(b, trigger=trigger)
+        if incognito:
+            # 风控期通道：无痕访问自己主页（data/my_profile.txt），零账号风险
+            from xhs_agent.analytics import collect_metrics_incognito
+            collect_metrics_incognito(trigger=trigger, headless=headless)
+        else:
+            with Browser(headless=headless) as b:
+                if not b.has_login():
+                    raise PublishError("登录态失效，请先运行: python -m xhs_agent login")
+                from xhs_agent.analytics import collect_metrics
+                collect_metrics(b, trigger=trigger)
         db.run_finished(rid, "success")
         return rid
     except (RateLimitError, Exception) as e:
         db.run_finished(rid, "failed", str(e))
         print(f"[metrics] 失败: {e}")
         return -1
+
+
+# ---------- 手动发布支持（风控期：AI 出内容+图片，用户手动发） ----------
+
+def do_render_images(file, headless: bool) -> int:
+    """把 pending 内容渲染成图片存本地（无痕浏览器 set_content，不访问小红书），
+    同时生成可直接复制的发文文本。输出目录 data/runs/<ts>_manual/。"""
+    if not file.exists():
+        print(f"[render] 内容文件不存在: {file}")
+        return -1
+    if file.suffix.lower() == ".md":
+        from xhs_agent.writer import from_markdown
+        content = from_markdown(file)
+    else:
+        content = json.loads(file.read_text(encoding="utf-8"))
+    shots = new_run_dir("manual")
+    from playwright.sync_api import sync_playwright
+    from xhs_agent.analytics import _incognito_ctx
+    from xhs_agent.publisher import prepare_images
+    with sync_playwright() as pw:
+        browser, ctx = _incognito_ctx(pw, headless)
+        try:
+            images = prepare_images(ctx, content, shots)
+        finally:
+            browser.close()
+    print(f"[render] {len(images)} 张图片已生成:")
+    for p in images:
+        print(f"  {p}")
+
+    lines = ["【标题】", content["title"].strip()[:20], "", "【正文】",
+             content.get("body", "").strip()[:1000], "", "【话题】"]
+    if content.get("topics"):
+        lines.append(" ".join("#" + t for t in content["topics"][:4]))
+    lines += ["", "【图片（按顺序上传）】"]
+    lines += [f"{i}. {p}" for i, p in enumerate(images, 1)]
+    txt = shots / "发文文本.txt"
+    txt.write_text("\n".join(lines), encoding="utf-8")
+    print(f"[render] 发文文本: {txt}")
+    print(f"[render] 输出目录: {shots}（手动发布就用这一套，别跑 publish-content）")
+    return 0
 
 
 # ---------- 展示 ----------
@@ -265,7 +312,8 @@ def main():
     p = argparse.ArgumentParser(prog="xhs_agent", description="小红书自我迭代 Agent")
     p.add_argument("cmd", choices=["login", "status", "pause", "resume", "search", "fetch",
                                    "spy", "research", "publish-content", "run-once", "daily",
-                                   "metrics", "refresh", "topic"])
+                                   "metrics", "refresh", "topic", "render-images",
+                                   "lock-account", "unlock-account"])
     p.add_argument("args", nargs="*", help="search 的关键词 / fetch 的链接")
     p.add_argument("--topic", default=None)
     p.add_argument("--file", default=str(PENDING))
@@ -273,6 +321,8 @@ def main():
     p.add_argument("--private", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--auto", action="store_true", help="metrics 计划任务模式（幂等）")
+    p.add_argument("--incognito", action="store_true",
+                   help="metrics 无痕模式：不登录访问自己主页（data/my_profile.txt）")
     p.add_argument("--headless", action="store_true", help="无头模式（默认弹窗，遇验证码可手动过）")
     p.add_argument("--logged-in", action="store_true",
                    help="spy 用登录态访问（网页端主页有强制登录墙，默认无痕采不到）")
@@ -310,7 +360,17 @@ def main():
     if a.cmd == "daily":
         return do_daily(a.headless)
     if a.cmd == "metrics":
-        return do_metrics(a.auto, a.headless)
+        return do_metrics(a.auto, a.headless, a.incognito)
+    if a.cmd == "render-images":
+        from pathlib import Path
+        return do_render_images(Path(a.file), a.headless)
+    if a.cmd == "lock-account":
+        db.set_setting("account_lock", "on")
+        return print("账号锁 → on：所有登录态（user_data/）操作被禁止，"
+                     "直到 unlock-account")
+    if a.cmd == "unlock-account":
+        db.set_setting("account_lock", "off")
+        return print("账号锁 → off：登录态操作恢复（谨慎，确认风控解除再用）")
     if a.cmd == "refresh":
         from xhs_agent.refresher import refresh
         return refresh()

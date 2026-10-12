@@ -21,6 +21,24 @@ class RateLimitError(RuntimeError):
     """触发小红书 IP 风控（安全限制 300012），应退避数小时再试。"""
 
 
+def detect_rate_limit(page):
+    """检测当前页是否是 300012 安全限制页，是则抛 RateLimitError（无痕/登录态通用）。"""
+    try:
+        title = page.title()
+        body = page.evaluate("() => document.body.innerText.slice(0, 300)") or ""
+    except Exception:
+        return
+    if ("安全限制" in title or "/website-login/error" in page.url
+            or "安全限制" in body or "300012" in body):
+        raise RateLimitError(
+            "触发小红书 IP 风控(300012 安全限制)。请数小时后再试，"
+            "并降低访问频率（research 一天最多 1 次，调试勿反复跑）。")
+
+
+class AccountLockedError(RuntimeError):
+    """账号锁开启时禁止任何登录态（persistent context）操作。"""
+
+
 class Browser:
     """persistent context 上下文管理器：with Browser() as b: b.page(...)"""
 
@@ -30,6 +48,13 @@ class Browser:
         self.ctx = None
 
     def __enter__(self):
+        # 账号锁（2026-10-12 风控警告后加）：开着就拒绝启动登录态浏览器，
+        # 防止任何命令误碰账号。解锁: python -m xhs_agent unlock-account
+        from xhs_agent import db
+        if db.get_setting("account_lock", "off") == "on":
+            raise AccountLockedError(
+                "账号已锁定（风控警告，登录态操作全停）。"
+                "解锁: python -m xhs_agent unlock-account")
         self._pw = sync_playwright().start()
         # 视口固定 1400x900：publisher 的发布按钮按坐标点击依赖这个值
         self.ctx = self._pw.chromium.launch_persistent_context(
@@ -74,16 +99,7 @@ class Browser:
 
     def check_rate_limit(self, page):
         """所有页面导航后必须调用：检测 300012 安全限制。"""
-        try:
-            title = page.title()
-            body = page.evaluate("() => document.body.innerText.slice(0, 300)") or ""
-        except Exception:
-            return
-        if ("安全限制" in title or "/website-login/error" in page.url
-                or "安全限制" in body or "300012" in body):
-            raise RateLimitError(
-                "触发小红书 IP 风控(300012 安全限制)。请数小时后再试，"
-                "并降低访问频率（research 一天最多 1 次，调试勿反复跑）。")
+        detect_rate_limit(page)
 
     def goto(self, page, url: str, timeout: int = 60000):
         page.goto(url, wait_until="domcontentloaded", timeout=timeout)

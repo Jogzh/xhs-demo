@@ -4,6 +4,11 @@
 架构与红线详见 [docs/技术方案.md](docs/技术方案.md)；命令统一走
 `PYTHONPATH=src python -m xhs_agent <cmd>`（下文简写为 `python -m xhs_agent`）。
 
+> **⚠️ 当前状态（2026-10-12 起）：风控观察期。** 账号被平台警告＋首篇笔记被封，
+> **登录态操作全部锁定**（账号锁 on），发布改用户手动，复盘数据靠用户报数。
+> 见「硬约束」第一条。下文涉及登录态的命令（research/spy --logged-in/publish 等）
+> 在锁开着时一律不可用，别尝试。
+
 ## 收到"发文章"时的标准流程
 
 1. **确定选题**：用户给了主题就用用户的；没给就 `python -m xhs_agent status` 看
@@ -37,23 +42,27 @@
      大字封面卡；有 `menu_lines` 会多画一张清单卡；也可以自己给 `images` 本地图路径。
    - 清单卡只适合清单/步骤类内容；非清单类给 `images` 放真实图或只留封面。
    - `strategy` 是这篇内容的策略标签，复盘时用来对比（可用 ai_v1、清单体_v2 等自造标签）。
-5. **发布**（默认公开；用户没说私密就发公开）：
+5. **发布（风控观察期：改用户手动）**——AI 只产出图片和文本存本地，用户自己去 App 发：
    ```bash
-   python -m xhs_agent publish-content            # 发布并自动归档 pending 文件
-   python -m xhs_agent publish-content --dry-run  # 填好表单但不点发布，看截图
-   python -m xhs_agent publish-content --file 文章.md   # 也可以直接发 markdown
+   python -m xhs_agent render-images   # 离线出图 + 发文文本，输出 data/runs/<ts>_manual/
    ```
-6. **回报结果**：把 title / note_id / 截图目录（data/runs/<ts>_publish/）告诉用户；
-   失败时读 runs 表 error 和对应截图，修好后重试（注意红线）。
+   把该目录里的 `cover.jpg`/`list_card.jpg`（按顺序）和 `发文文本.txt`（标题/正文/话题
+   可直接复制）交给用户手动发布；用户报回 note_id 后补录入库。
+   （登录态自动发布 `publish-content` 已被账号锁封死，恢复须用户明确同意 unlock-account。）
+6. **回报结果**：把内容目录（data/runs/<ts>_manual/）告诉用户；用户手动发布后若报了
+   数据/链接，按下面"复盘"一节补录。
 
 ## 每日节奏（2026-10-11 起改为人工驱动，计划任务已注销）
 
 用户每天会主动发起，没有定时任务：
-- **"复盘"**：`python -m xhs_agent metrics` 回流互动数据 → 打分
-  （score = 1赞+2评+3转+1.5藏）→ `python -m xhs_agent refresh` 出新 insights，
-  把结论讲给用户。
-- **"发文"**：按上面标准流程写 pending → 发布 → 回报。
-- 想恢复自动 loop：`powershell -ExecutionPolicy Bypass -File scripts\register_tasks.ps1 -Action register`。
+- **"复盘"（风控期路径）**：登录态被锁，`metrics` 默认路径不可用。依次尝试：
+  ① `python -m xhs_agent metrics --incognito`——无痕访问自己主页
+  （链接存 `data/my_profile.txt`，**不进 git**）；**已知是登录墙，大概率采不到**。
+  ② 请用户报互动数（赞/藏/评/转），或给笔记分享链接，无痕 `fetch` 补录后
+  写 metrics 表打分。之后 `refresh` 出新 insights，把结论讲给用户。
+- **"发文"**：按上面标准流程写 pending → `render-images` 出图 → 用户手动发布 → 回报。
+- 想恢复自动 loop：先要用户同意 `unlock-account`，再
+  `powershell -ExecutionPolicy Bypass -File scripts\register_tasks.ps1 -Action register`。
 
 ## 自主权（用户授权，2026-10-11）
 
@@ -80,30 +89,43 @@
 ```bash
 PYTHONPATH=src python -m xhs_agent status          # 开关/排队内容/笔记得分/insights
 PYTHONPATH=src python -m xhs_agent pause / resume  # 总开关
-PYTHONPATH=src python -m xhs_agent metrics         # 手动回流
+PYTHONPATH=src python -m xhs_agent metrics --incognito # 无痕回流（不碰账号；主页是登录墙，见硬约束）
 PYTHONPATH=src python -m xhs_agent refresh         # 手动复盘（纯本地）
-PYTHONPATH=src python -m xhs_agent search <关键词>  # 搜爆款
+PYTHONPATH=src python -m xhs_agent render-images   # 离线出图+发文文本（手动发布用，不访问小红书）
+PYTHONPATH=src python -m xhs_agent lock-account / unlock-account  # 账号锁（风控期登录态全禁）
+PYTHONPATH=src python -m xhs_agent search <关键词>  # 搜爆款（需登录态，锁开时不可用）
 PYTHONPATH=src python -m xhs_agent fetch <笔记链接> # 抓整篇笔记到 notes/
-PYTHONPATH=src python -m xhs_agent spy --logged-in  # 拆对标博主主页（清单 data/bloggers.txt）
-PYTHONPATH=src python -m xhs_agent run-once --topic X   # 模板内容兜底发布
+PYTHONPATH=src python -m xhs_agent spy --logged-in  # 拆对标博主主页（清单 data/bloggers.txt；需登录态）
+PYTHONPATH=src python -m xhs_agent run-once --topic X   # 模板内容兜底发布（需登录态）
 PYTHONPATH=src python -m xhs_agent topic list           # 主题池
 PYTHONPATH=src python -m xhs_agent topic add X          # 加主题（research 轮询用）
 ```
 
 ## 硬约束（实测踩坑，勿越）
 
+- **🔥 风控观察期（2026-10-12 起，最高优先级）**：账号被平台两次行为警告
+  （"疑似三方工具自动浏览/发布""浏览行为不像真人"），首篇笔记因「AI 托管」叙事
+  被判违规封禁。**一切登录态（user_data/）操作禁止**——账号锁 `account_lock=on`
+  在 Browser 层强制，login/publish/search/research/spy --logged-in/metrics 全部不可用；
+  发布全部改用户手动（`render-images` 出内容+图片）；复盘数据靠用户报数/分享链接。
+  恢复登录态操作必须用户明确同意（`unlock-account`）。
+- **内容红线**：标题/正文/封面严禁「AI 托管/AI 自动运营账号」叙事（平台明确判
+  违规，已入 insights）。安全框架 = 真人作者 + AI 工具（"我实测""我用来做X"）。
 - **频率**：约 15 次自动化页面访问/小时触发 300012"安全限制"（数小时自愈）。
   一次发布 ≈ 2~3 次页面访问，安全；research（≈6 次）一天最多 1 次；
-  **调试严禁短时间内反复跑浏览器命令**。
+  **调试严禁短时间内反复跑浏览器命令**。教训：2026-10-11 曾 10 分钟内连跑
+  spy×2＋publish，机器节奏是行为检测重点——将来恢复后，浏览器动作要拉开间隔。
 - **xsec_token**：访问笔记详情必须带搜索/主页卡片里的 token，随取随用、不落库长期存。
 - **每天最多发 1 篇**：runs 表幂等强制，发多了账号风险高。
 - **persistent context 单实例**：同一时刻只能有一个脚本用 user_data/，
   跑之前确认没有残留浏览器进程占用。
 - **登录态失效**：发布报"登录态失效"时，请用户跑 `python -m xhs_agent login` 扫码。
-- **未登录主页是登录墙**：网页端不登录访问博主主页会整页 302 到 /login，
-  spy 默认无痕模式采不到东西，实际用 `spy --logged-in`（仅 ≈2 次页面访问）。
-- **训练数据不进 git**：data/（db/调研/归档/bloggers.txt）、notes/、user_data/
-  都在 .gitignore；对标博主、主题池等信息只存在 data/ 下，仓库可公开。
+- **未登录主页是登录墙**：网页端不登录访问任何博主主页（包括自己的，
+  `data/my_profile.txt`）会整页 302 到 /login，无痕采不到东西；
+  `metrics --incognito` 大概率失败，数据得靠用户报数/分享链接。
+- **训练数据不进 git**：data/（db/调研/归档/bloggers.txt/my_profile.txt）、notes/、
+  user_data/ 都在 .gitignore；对标博主、主题池、主页链接等信息只存在 data/ 下，
+  仓库可公开。
 - **发布按钮是 shadow DOM**：publisher.py 按坐标点（视口 1400x900 固定），勿改视口。
 
 ## 迭代机制（score 驱动）
