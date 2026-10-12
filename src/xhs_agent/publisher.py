@@ -18,7 +18,7 @@ from pathlib import Path
 from playwright.sync_api import BrowserContext
 
 from xhs_agent.browser import HOME, RateLimitError
-from xhs_agent.cover import make_cover, make_list_card
+from xhs_agent.cover import make_cover, make_list_card, make_note_card, make_vs_cover
 from xhs_agent.writer import derive_cover_lines
 
 NOTE_ID_RE = re.compile(r"/(?:explore|discovery/item|search_result)/([0-9a-f]{24})")
@@ -50,15 +50,31 @@ def _open_publish_page(ctx: BrowserContext):
 
 
 def prepare_images(ctx: BrowserContext, content: dict, shots_dir: Path) -> list:
-    """解析内容里的图片：给了 images 用之；否则按 cover_title/menu_lines 生成卡片。"""
+    """解析内容里的图片：给了 images 用之；否则按模板生成卡片。
+
+    封面：cover_style="vs" → 对比式封面（content["vs"]）；默认大字卡（cover_title）。
+    第二张：card_style="note" → 手账便签卡（content["notes"]）；默认清单卡（menu_lines）。
+    """
     paths = [str(Path(p).resolve()) for p in content.get("images", []) if p]
     if paths:
         return paths
-    cover_lines = content.get("cover_title") or derive_cover_lines(content["title"])
-    cover = make_cover(ctx, cover_lines, content.get("cover_sub", ""),
-                       shots_dir / "cover.jpg")
+    if content.get("cover_style") == "vs" and content.get("vs"):
+        vs = content["vs"]
+        cover = make_vs_cover(ctx, vs.get("top", ""),
+                              vs.get("left", {}), vs.get("right", {}),
+                              shots_dir / "cover.jpg")
+    else:
+        cover_lines = content.get("cover_title") or derive_cover_lines(content["title"])
+        cover = make_cover(ctx, cover_lines, content.get("cover_sub", ""),
+                           shots_dir / "cover.jpg")
     paths = [str(cover)]
-    if content.get("menu_lines"):
+    if content.get("card_style") == "note" and content.get("notes"):
+        card = make_note_card(ctx, content.get("card_title", "直接抄"),
+                              [tuple(x) if isinstance(x, (list, tuple)) else (str(i), x)
+                               for i, x in enumerate(content["notes"], 1)],
+                              shots_dir / "list_card.jpg")
+        paths.append(str(card))
+    elif content.get("menu_lines"):
         card = make_list_card(ctx, content.get("card_title", "清单（直接抄）"),
                               [tuple(x) for x in content["menu_lines"]],
                               shots_dir / "list_card.jpg")

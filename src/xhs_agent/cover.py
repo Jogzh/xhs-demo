@@ -56,6 +56,85 @@ LIST_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
   <div class="foot">细节看正文 👉</div>
 </div></body></html>"""
 
+# 对比式封面（Before/After VS 分屏，2026-10-12 新增：情绪钩子+视觉冲击）
+VS_COVER_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
+  body {{ margin: 0 }}
+  #cover {{ position: relative; width: 1080px; height: 1440px; box-sizing: border-box;
+    display: flex; flex-direction: column; font-family: "Microsoft YaHei",
+    "Segoe UI Emoji", sans-serif; overflow: hidden }}
+  .top {{ height: 300px; display: flex; align-items: center; justify-content: center;
+    background: #111827; color: #fbbf24; font-size: 62px; font-weight: 700;
+    padding: 0 70px; text-align: center; line-height: 1.4 }}
+  .split {{ flex: 1; display: flex; position: relative }}
+  .side {{ flex: 1; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; padding: 40px; text-align: center }}
+  .side.left {{ background: #374151; color: #d1d5db }}
+  .side.right {{ background: linear-gradient(200deg, #2563eb 0%, #38bdf8 100%);
+    color: #fff }}
+  .emoji {{ font-size: 150px; line-height: 1.2 }}
+  .big {{ font-size: 78px; font-weight: 700; margin: 36px 0 20px; color: inherit }}
+  .side.left .big {{ color: #f3f4f6 }}
+  .small {{ font-size: 40px; line-height: 1.6; opacity: .9 }}
+  .vs {{ position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    width: 170px; height: 170px; border-radius: 50%; background: #fff; color: #ff2442;
+    display: flex; align-items: center; justify-content: center; font-size: 72px;
+    font-weight: 900; box-shadow: 0 10px 50px rgba(0,0,0,.35);
+    border: 8px solid #ff2442; z-index: 2 }}
+  .footer {{ position: absolute; bottom: 44px; left: 0; right: 0; text-align: center;
+    color: rgba(255,255,255,.75); font-size: 30px; z-index: 2 }}
+</style></head><body><div id="cover">
+  <div class="top">{top}</div>
+  <div class="split">
+    <div class="side left">
+      <div class="emoji">{l_emoji}</div>
+      <div class="big">{l_big}</div>
+      <div class="small">{l_small}</div>
+    </div>
+    <div class="side right">
+      <div class="emoji">{r_emoji}</div>
+      <div class="big">{r_big}</div>
+      <div class="small">{r_small}</div>
+    </div>
+    <div class="vs">VS</div>
+    <div class="footer">{account_tag} · {date}</div>
+  </div>
+</div></body></html>"""
+
+# 手账便签卡（楷体+荧光笔+胶带贴纸，2026-10-12 新增：真实亲切感）
+NOTE_CARD_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
+  body {{ margin: 0 }}
+  #card {{ position: relative; width: 1080px; height: 1440px; box-sizing: border-box;
+    background: #faf7f0; padding: 90px 80px; font-family: "KaiTi", "楷体",
+    "Microsoft YaHei", "Segoe UI Emoji", sans-serif; color: #292524; overflow: hidden }}
+  #card::before {{ content: ""; position: absolute; inset: 0;
+    background: repeating-linear-gradient(0deg, transparent 0 79px,
+    rgba(120, 110, 90, .08) 79px 80px) }}
+  h1 {{ position: relative; font-size: 74px; text-align: center; margin: 0 0 30px;
+    font-weight: 700 }}
+  h1 em {{ font-style: normal; background: linear-gradient(transparent 55%,
+    #fde047 55%) }}
+  .note {{ position: relative; background: #fff; border-radius: 6px;
+    box-shadow: 0 6px 20px rgba(0,0,0,.08); padding: 40px 44px; margin: 44px 0;
+    font-size: 44px; line-height: 1.65 }}
+  .note::before {{ content: ""; position: absolute; top: -22px; left: 50%;
+    transform: translateX(-50%) rotate(-2deg); width: 220px; height: 44px;
+    background: rgba(147, 197, 253, .55) }}
+  .note .no {{ display: inline-flex; width: 56px; height: 56px; border-radius: 50%;
+    background: #2563eb; color: #fff; font-family: "Microsoft YaHei", sans-serif;
+    font-size: 34px; align-items: center; justify-content: center; margin-right: 18px }}
+  .note b {{ color: #1d4ed8 }}
+  .n1 {{ transform: rotate(-1.2deg) }}
+  .n2 {{ transform: rotate(0.8deg) }}
+  .n3 {{ transform: rotate(-0.6deg) }}
+  .n4 {{ transform: rotate(1deg) }}
+  .foot {{ position: absolute; bottom: 52px; left: 0; right: 0; text-align: center;
+    font-size: 42px; color: #b45309 }}
+</style></head><body><div id="card">
+  <h1><em>{title}</em></h1>
+  {notes}
+  <div class="foot">详细步骤看正文 👉</div>
+</div></body></html>"""
+
 
 def render_html(ctx, html: str, out) -> "Path":
     """渲染 HTML 并截元素图（等待字体就绪）。ctx: playwright BrowserContext。"""
@@ -90,4 +169,26 @@ def make_list_card(ctx, title: str, rows: list, out) -> "Path":
     tr = "".join(f'<div class="row"><span class="day">{a}</span><span>{b}</span></div>'
                  for a, b in rows[:8])
     html = LIST_HTML.format(title=title[:14], rows=tr)
+    return render_html(ctx, html, out)
+
+
+def make_vs_cover(ctx, top: str, left: dict, right: dict, out,
+                  account_tag: str = "AI 工具实测") -> "Path":
+    """对比式（Before/After）封面。left/right: {emoji, big, small}。"""
+    html = VS_COVER_HTML.format(
+        top=(top or "")[:24],
+        l_emoji=left.get("emoji", "😩"), l_big=left.get("big", "")[:6],
+        l_small=left.get("small", "")[:30],
+        r_emoji=right.get("emoji", "🤖"), r_big=right.get("big", "")[:6],
+        r_small=right.get("small", "")[:30],
+        account_tag=account_tag, date=datetime.now().strftime("%Y-%m-%d"))
+    return render_html(ctx, html, out)
+
+
+def make_note_card(ctx, title: str, notes: list, out) -> "Path":
+    """手账便签卡。notes: [(序号, 富文本)， ...] ≤4 张便签，富文本可含 <b>。"""
+    items = []
+    for i, (no, text) in enumerate(notes[:4], 1):
+        items.append(f'<div class="note n{i}"><span class="no">{no}</span>{text}</div>')
+    html = NOTE_CARD_HTML.format(title=(title or "")[:12], notes="".join(items))
     return render_html(ctx, html, out)
