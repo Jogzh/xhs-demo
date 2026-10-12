@@ -74,7 +74,8 @@ VS_COVER_HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
   .emoji {{ font-size: 150px; line-height: 1.2 }}
   .big {{ font-size: 78px; font-weight: 700; margin: 36px 0 20px; color: inherit }}
   .side.left .big {{ color: #f3f4f6 }}
-  .small {{ font-size: 40px; line-height: 1.6; opacity: .9 }}
+  .small {{ font-size: 40px; line-height: 1.6; opacity: .9;
+    word-break: keep-all; overflow-wrap: anywhere }}
   .vs {{ position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
     width: 170px; height: 170px; border-radius: 50%; background: #fff; color: #ff2442;
     display: flex; align-items: center; justify-content: center; font-size: 72px;
